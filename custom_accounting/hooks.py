@@ -48,6 +48,27 @@ app_license = "mit"
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
+
+# doctype_tree_js = {"Account" : "public/js/account_tree.js"}
+
+doctype_tree_js = {"Cost Center" : "public/js/cost_center_tree.js"}
+
+fixtures = [
+    {
+        "doctype": "Custom Field",
+        "filters": [
+            ["module", "=", "Custom Accounting"]
+        ]
+    }
+]
+
+# app_include_js = [ "/assets/custom_accounting/js/report/general_ledger.js"]
+
+
+# override_report_js = {
+#     "General Ledger": "/assets/custom_accounting/js/report/general_ledger.js"
+# }
+
 # Svg Icons
 # ------------------
 # include app icons in desk
