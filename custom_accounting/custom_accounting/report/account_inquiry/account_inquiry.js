@@ -42,7 +42,16 @@ frappe.query_reports["Account Inquiry"] = {
             fieldname: "cost_center",
             label: __("Cost Center / Location"),
             fieldtype: "Link",
-            options: "Cost Center"
+            options: "Cost Center",
+            get_query: () => {
+                const company = frappe.query_report.get_filter_value("company");
+                return {
+                    filters: {
+                        company: company,
+                        is_group: 0
+                    }
+                };
+            }
         },
         {
             fieldname: "group_by",
