@@ -59,6 +59,12 @@ fixtures = [
         "filters": [
             ["module", "=", "Custom Accounting"]
         ]
+    },
+    {
+        "dt": "Client Script",
+        "filters": [
+            ["module", "=", "Custom Accounting"]
+        ]
     }
 ]
 
