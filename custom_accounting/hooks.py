@@ -65,6 +65,12 @@ fixtures = [
         "filters": [
             ["module", "=", "Custom Accounting"]
         ]
+    },
+    {
+        "doctype": "Report",
+        "filters": [
+            ["module", "=", "Custom Accounting"]
+        ]
     }
 ]
 
