@@ -226,7 +226,7 @@ def get_gl_entries(filters, accounting_dimensions):
 			gl_entry.custom_item = None
 
 	if filters.get("presentation_currency"):
-		return convert_to_presentation_currency(gl_entries, currency_map, filters)
+		return convert_to_presentation_currency(gl_entries, currency_map)
 	else:
 		return gl_entries
 
