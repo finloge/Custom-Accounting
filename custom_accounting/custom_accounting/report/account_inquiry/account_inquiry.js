@@ -35,20 +35,46 @@ frappe.query_reports["Account Inquiry"] = {
             fieldtype: "Link",
             options: "Account",
             get_query: () => ({
-                filters: { company: frappe.query_report.get_filter_value("company"), is_group: 0 }
+                filters: {
+                    company: frappe.query_report.get_filter_value("company"),
+                    is_group: 0
+                }
             })
         },
         {
             fieldname: "cost_center",
-            label: __("Cost Center / Location"),
+            label: __("Cost Center"),
             fieldtype: "Link",
             options: "Cost Center",
             get_query: () => {
                 const company = frappe.query_report.get_filter_value("company");
+                const location = frappe.query_report.get_filter_value("location");
+                
+                let filters = {
+                    company: company,
+                    is_group: 0
+                };
+
+                // If user selected a location → limit cost centers
+                if (location) {
+                    filters.custom_location = location;
+                }
+
+                return { filters };
+            }
+        },
+        {
+            fieldname: "location",
+            label: __("Location"),
+            fieldtype: "Link",
+            options: "Location",
+            get_query: () => {
+                const cost_center = frappe.query_report.get_filter_value("cost_center");
+
                 return {
+                    query: "custom_accounting.custom_accounting.report.account_inquiry.account_inquiry.location_query",
                     filters: {
-                        company: company,
-                        is_group: 0
+                        cost_center: cost_center || ""
                     }
                 };
             }
@@ -93,7 +119,48 @@ frappe.query_reports["Account Inquiry"] = {
     parent_field: "parent",
     initial_depth: 1,
 
-    onload: function (report) {
-        // report.page.add_inner_button(__("Refresh"), () => report.refresh());
-    }
+    formatter: function(value, row, column, data, default_formatter, indent) {
+        if (column && column.fieldname === "balance" && data && !data.is_group && data.account) {
+            const currency = frappe.query_report.get_filter_value("currency") || frappe.defaults.get_user_default("Currency") || "AED";
+            const formatted_value = default_formatter(value, row, column, data, indent);
+
+            const company = frappe.query_report.get_filter_value("company");
+            const account = data.account;
+            const from_date = data.report_from;
+            const to_date = data.report_to;
+            const cost_center = data.cost_center || "";
+            const location = data.location || "";
+
+            let filter_params = [
+                `company=${encodeURIComponent(company)}`,
+                `account=${encodeURIComponent(account)}`,
+                `from_date=${encodeURIComponent(from_date)}`,
+                `to_date=${encodeURIComponent(to_date)}`
+            ];
+
+            if (cost_center) {
+                filter_params.push(`cost_center=${encodeURIComponent(cost_center)}`);
+            }
+
+            if (location) {
+                filter_params.push(`location=${encodeURIComponent(location)}`);
+            }
+
+            const report_currency = frappe.query_report.get_filter_value("currency");
+            if (report_currency) {
+                filter_params.push(`currency=${encodeURIComponent(report_currency)}`);
+            }
+
+            const url = `/app/query-report/General Ledger?${filter_params.join("&")}`;
+            return `<a href="${url}" target="_blank" class="btn-link">${formatted_value}</a>`;
+        }
+        return default_formatter(value, row, column, data, indent);
+    },
+
+    // onload: function (report) {
+    //     // reset location when cost center changes
+    //     frappe.query_report.get_filter('cost_center').on_change = () => {
+    //         frappe.query_report.set_filter_value('location', '');
+    //     };
+    // }
 };

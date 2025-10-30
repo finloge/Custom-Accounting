@@ -1,8 +1,3 @@
-# Copyright (c) 2025, example.com and contributors
-# For license information, please see license.txt
-
-# import frappe
-
 import frappe
 from frappe import _
 from frappe.utils import flt, getdate, get_last_day, add_months, get_first_day
@@ -64,6 +59,12 @@ def validate_filters(filters):
     if getdate(filters.from_date) > getdate(filters.to_date):
         frappe.throw(_("From Date cannot be greater than To Date"))
 
+    # Validate cost_center and location consistency
+    if filters.get("cost_center") and filters.get("location"):
+        loc = frappe.db.get_value("Cost Center", filters.cost_center, "custom_location")
+        if loc and loc != filters.location:
+            frappe.throw(_("Selected Cost Center's location does not match the selected Location"))
+
 
 # -----------------------------
 # Period Generators
@@ -105,62 +106,96 @@ def get_years_between(from_date, to_date):
 def get_data(filters, periods, group_by):
     data = []
     grand_totals = {"debit": 0, "credit": 0, "variance": 0}
-    ytd_cache = {"debit": 0, "credit": 0}
 
     for period in periods:
         if group_by == "Month":
-            from_date = datetime.strptime(period, "%b %Y")
-            to_date = get_last_day(from_date)
+            period_start = datetime.strptime(period, "%b %Y")
+            period_end = get_last_day(period_start)
         elif group_by == "Quarter":
             q, year = period.split()
             q_num = int(q[1])
-            from_date = datetime(int(year), (q_num - 1) * 3 + 1, 1)
-            to_date = add_months(from_date, 3) - relativedelta(days=1)
+            period_start = datetime(int(year), (q_num - 1) * 3 + 1, 1)
+            period_end = add_months(period_start, 3) - relativedelta(days=1)
         else:
             year = int(period)
-            from_date = datetime(year, 1, 1)
-            to_date = datetime(year, 12, 31)
+            period_start = datetime(year, 1, 1)
+            period_end = datetime(year, 12, 31)
 
-        if filters.currency_type == "YTD Converted":
-            ytd_from = get_first_day(datetime(from_date.year, 1, 1))
-        else:
-            ytd_from = from_date
-
-        gl_entries = frappe.db.sql(
+        # Dynamic filters
+        cost_center_filter = ""
+        location_filter = ""
+        params_base = {
+            "company": filters.company,
+            "account": filters.get("account"),
+            "currency": filters.get("currency"),
+        }
+        if filters.get("cost_center"):
+            cost_center_filter = "AND cost_center = %(cost_center)s"
+            params_base["cost_center"] = filters.cost_center
+        elif filters.get("location"):
+            cost_center_filter = """
+            AND cost_center IN (
+                SELECT name FROM `tabCost Center`
+                WHERE company = %(company)s AND custom_location = %(location)s AND is_group = 0
+            )
             """
-            SELECT account, cost_center, account_currency, SUM(debit) AS debit, SUM(credit) AS credit
+            params_base["location"] = filters.location
+
+        if filters.get("location"):
+            location_filter = "AND location = %(location)s"
+            if "location" not in params_base:
+                params_base["location"] = filters.location
+
+        account_cond = "AND account = %(account)s" if filters.get("account") else ""
+        currency_cond = "AND account_currency = %(currency)s" if filters.get("currency") else ""
+
+        # Compute period activity for grand totals (always period-specific)
+        activity_params = params_base.copy()
+        activity_params["from_date"] = period_start
+        activity_params["to_date"] = period_end
+        activity_query = f"""
+            SELECT SUM(debit) AS debit_total, SUM(credit) AS credit_total
             FROM `tabGL Entry`
             WHERE company = %(company)s
                 AND posting_date BETWEEN %(from_date)s AND %(to_date)s
                 {account_cond}
-                {cost_center_cond}
+                {cost_center_filter}
+                {location_filter}
                 {currency_cond}
-            GROUP BY account, cost_center, account_currency
-            """.format(
-                account_cond="AND account = %(account)s" if filters.get("account") else "",
-                cost_center_cond="AND cost_center = %(cost_center)s" if filters.get("cost_center") else "",
-                currency_cond="AND account_currency = %(currency)s" if filters.get("currency") else "",
-            ),
-            {
-                "company": filters.company,
-                "from_date": ytd_from if filters.currency_type == "YTD Converted" else from_date,
-                "to_date": to_date,
-                "account": filters.get("account"),
-                "cost_center": filters.get("cost_center"),
-                "currency": filters.get("currency"),
-            },
+        """
+        activity_data = frappe.db.sql(activity_query, activity_params)
+        period_activity_debit = flt(activity_data[0][0]) if activity_data else 0
+        period_activity_credit = flt(activity_data[0][1]) if activity_data else 0
+        grand_totals["debit"] += period_activity_debit
+        grand_totals["credit"] += period_activity_credit
+
+        # Compute display values (YTD or period)
+        if filters.currency_type == "YTD Converted":
+            report_from = get_first_day(datetime(period_start.year, 1, 1))
+        else:
+            report_from = period_start
+
+        display_params = params_base.copy()
+        display_params["from_date"] = report_from
+        display_params["to_date"] = period_end
+        gl_entries = frappe.db.sql(
+            f"""
+            SELECT account, cost_center, location, account_currency, SUM(debit) AS debit, SUM(credit) AS credit
+            FROM `tabGL Entry`
+            WHERE company = %(company)s
+                AND posting_date BETWEEN %(from_date)s AND %(to_date)s
+                {account_cond}
+                {cost_center_filter}
+                {location_filter}
+                {currency_cond}
+            GROUP BY account, cost_center, location, account_currency
+            """,
+            display_params,
             as_dict=True,
         )
 
         period_debit = sum(flt(e.debit) for e in gl_entries)
         period_credit = sum(flt(e.credit) for e in gl_entries)
-
-        if filters.currency_type == "YTD Converted":
-            ytd_cache["debit"] += period_debit
-            ytd_cache["credit"] += period_credit
-            period_debit = ytd_cache["debit"]
-            period_credit = ytd_cache["credit"]
-
         period_balance = period_debit - period_credit
 
         header = {
@@ -170,9 +205,11 @@ def get_data(filters, periods, group_by):
             "debit": flt(period_debit),
             "credit": flt(period_credit),
             "balance": flt(period_balance),
+            "report_from": report_from.strftime("%Y-%m-%d"),
+            "report_to": period_end.strftime("%Y-%m-%d"),
         }
 
-        if filters.show_variance:
+        if filters.get("show_variance"):
             header["variance"] = 0
 
         data.append(header)
@@ -186,19 +223,20 @@ def get_data(filters, periods, group_by):
                 "is_group": 0,
                 "account": e.account,
                 "cost_center": e.cost_center,
+                "location": e.location,
                 "debit": flt(e.debit),
                 "credit": flt(e.credit),
                 "balance": flt(balance),
+                "report_from": report_from.strftime("%Y-%m-%d"),
+                "report_to": period_end.strftime("%Y-%m-%d"),
             }
-            if filters.show_variance:
+            if filters.get("show_variance"):
                 variance = compute_variance(e.account, e.cost_center, filters, balance)
                 row["variance"] = variance
                 header["variance"] += variance
             data.append(row)
 
-        grand_totals["debit"] += period_debit
-        grand_totals["credit"] += period_credit
-        if filters.show_variance:
+        if filters.get("show_variance"):
             grand_totals["variance"] += header["variance"]
 
     return data, grand_totals
@@ -253,6 +291,7 @@ def get_columns(filters):
     columns = [
         {"label": _("Period / Account"), "fieldname": "name", "fieldtype": "Data", "width": 300},
         {"label": _("Cost Center"), "fieldname": "cost_center", "fieldtype": "Link", "options": "Cost Center", "width": 160},
+        {"label": _("Location"), "fieldname": "location", "fieldtype": "Link", "options": "Location", "width": 160},
         {"label": _("Debit"), "fieldname": "debit", "fieldtype": "Currency", "options": filters.get("currency"), "width": 130},
         {"label": _("Credit"), "fieldname": "credit", "fieldtype": "Currency", "options": filters.get("currency"), "width": 130},
         {"label": _("Balance"), "fieldname": "balance", "fieldtype": "Currency", "options": filters.get("currency"), "width": 130},
@@ -266,3 +305,39 @@ def get_columns(filters):
             "width": 150,
         })
     return columns
+
+#For Location filter
+@frappe.whitelist()
+def location_query(doctype, txt, searchfield, start, page_len, filters):
+    cost_center = filters.get("cost_center")
+
+    # ✅ If cost center not selected → return all locations
+    if not cost_center:
+        return frappe.db.sql("""
+            SELECT name, location_name
+            FROM `tabLocation`
+            WHERE location_name LIKE %(txt)s
+            LIMIT %(start)s, %(page_len)s
+        """, {
+            "txt": f"%{txt}%",
+            "start": start,
+            "page_len": page_len
+        })
+
+    # ✅ Fetch mapped location
+    custom_location = frappe.db.get_value("Cost Center", cost_center, "custom_location")
+
+    # If no mapping found → show none
+    if not custom_location:
+        return []
+
+    return frappe.db.sql("""
+        SELECT name, location_name
+        FROM `tabLocation`
+        WHERE location_name LIKE %(loc)s
+        LIMIT %(start)s, %(page_len)s
+    """, {
+        "loc": f"%{custom_location}%",
+        "start": start,
+        "page_len": page_len
+    })

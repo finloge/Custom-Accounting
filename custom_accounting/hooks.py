@@ -74,6 +74,13 @@ fixtures = [
     }
 ]
 
+doc_events = {
+    "Location": {
+        "autoname": "custom_accounting.custom_accounting.naming.naming_series.set_location_name"
+    }
+}
+
+
 # app_include_js = [ "/assets/custom_accounting/js/report/general_ledger.js"]
 
 
