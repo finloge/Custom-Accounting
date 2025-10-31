@@ -42,6 +42,13 @@ frappe.query_reports["Account Inquiry"] = {
             })
         },
         {
+            fieldname: "voucher_type",
+            label: __("Voucher Type"),
+            fieldtype: "Select",
+            options: "\nSales Invoice\nPayment Entry\nJournal Entry\nPurchase Invoice",
+            default: ""
+        },
+        {
             fieldname: "cost_center",
             label: __("Cost Center"),
             fieldtype: "Link",

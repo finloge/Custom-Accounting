@@ -105,7 +105,10 @@ def get_years_between(from_date, to_date):
 # -----------------------------
 def get_data(filters, periods, group_by):
     data = []
-    grand_totals = {"debit": 0, "credit": 0, "variance": 0}
+    grand_totals = {"debit": 0, "credit": 0, "variance": 0, "balance": 0}
+
+    last_header = None
+    is_ytd = filters.get("currency_type") == "YTD Converted"
 
     for period in periods:
         if group_by == "Month":
@@ -148,8 +151,14 @@ def get_data(filters, periods, group_by):
 
         account_cond = "AND account = %(account)s" if filters.get("account") else ""
         currency_cond = "AND account_currency = %(currency)s" if filters.get("currency") else ""
+        
+        # Optional voucher_type filter (e.g., to show only 'Sales Invoice', exclude 'Payment Entry')
+        voucher_cond = ""
+        if filters.get("voucher_type"):
+            voucher_cond = "AND voucher_type = %(voucher_type)s"
+            params_base["voucher_type"] = filters.voucher_type
 
-        # Compute period activity for grand totals (always period-specific)
+        # Compute period activity for accumulation (always period-specific)
         activity_params = params_base.copy()
         activity_params["from_date"] = period_start
         activity_params["to_date"] = period_end
@@ -162,6 +171,7 @@ def get_data(filters, periods, group_by):
                 {cost_center_filter}
                 {location_filter}
                 {currency_cond}
+                {voucher_cond}
         """
         activity_data = frappe.db.sql(activity_query, activity_params)
         period_activity_debit = flt(activity_data[0][0]) if activity_data else 0
@@ -170,7 +180,7 @@ def get_data(filters, periods, group_by):
         grand_totals["credit"] += period_activity_credit
 
         # Compute display values (YTD or period)
-        if filters.currency_type == "YTD Converted":
+        if is_ytd:
             report_from = get_first_day(datetime(period_start.year, 1, 1))
         else:
             report_from = period_start
@@ -178,8 +188,7 @@ def get_data(filters, periods, group_by):
         display_params = params_base.copy()
         display_params["from_date"] = report_from
         display_params["to_date"] = period_end
-        gl_entries = frappe.db.sql(
-            f"""
+        gl_entries_query = f"""
             SELECT account, cost_center, location, account_currency, SUM(debit) AS debit, SUM(credit) AS credit
             FROM `tabGL Entry`
             WHERE company = %(company)s
@@ -188,11 +197,10 @@ def get_data(filters, periods, group_by):
                 {cost_center_filter}
                 {location_filter}
                 {currency_cond}
+                {voucher_cond}
             GROUP BY account, cost_center, location, account_currency
-            """,
-            display_params,
-            as_dict=True,
-        )
+            """
+        gl_entries = frappe.db.sql(gl_entries_query, display_params, as_dict=True)
 
         period_debit = sum(flt(e.debit) for e in gl_entries)
         period_credit = sum(flt(e.credit) for e in gl_entries)
@@ -208,6 +216,7 @@ def get_data(filters, periods, group_by):
             "report_from": report_from.strftime("%Y-%m-%d"),
             "report_to": period_end.strftime("%Y-%m-%d"),
         }
+        last_header = header  # Track for YTD grand fix
 
         if filters.get("show_variance"):
             header["variance"] = 0
@@ -231,7 +240,7 @@ def get_data(filters, periods, group_by):
                 "report_to": period_end.strftime("%Y-%m-%d"),
             }
             if filters.get("show_variance"):
-                variance = compute_variance(e.account, e.cost_center, filters, balance)
+                variance = compute_variance(e.account, e.cost_center, filters, balance, report_from, period_end)
                 row["variance"] = variance
                 header["variance"] += variance
             data.append(row)
@@ -239,17 +248,25 @@ def get_data(filters, periods, group_by):
         if filters.get("show_variance"):
             grand_totals["variance"] += header["variance"]
 
+    # Fix for YTD: Grand totals should match last period's YTD (not sum of periods, to avoid undercounting prior months)
+    if is_ytd and last_header:
+        grand_totals["debit"] = last_header["debit"]
+        grand_totals["credit"] = last_header["credit"]
+        grand_totals["balance"] = last_header["balance"]
+        if filters.get("show_variance"):
+            grand_totals["variance"] = last_header["variance"]
+
     return data, grand_totals
 
 
 # -----------------------------
 # Variance Logic
 # -----------------------------
-def compute_variance(account, cost_center, filters, actual_balance):
+def compute_variance(account, cost_center, filters, actual_balance, period_start, period_end):
     fiscal_year = get_fiscal_year(filters.from_date)
-    budget = frappe.db.sql(
+    budget_data = frappe.db.sql(
         """
-        SELECT COALESCE(SUM(budget_amount), 0) AS total
+        SELECT COALESCE(SUM(budget_amount), 0) AS total_budget
         FROM `tabBudget Account`
         WHERE account = %s
           AND parent IN (
@@ -260,8 +277,18 @@ def compute_variance(account, cost_center, filters, actual_balance):
         (account, cost_center or None, fiscal_year),
         as_dict=True,
     )
-    budget_val = budget[0].total if budget else 0.0
-    return actual_balance - budget_val
+    if not budget_data:
+        return actual_balance  # No budget, variance = actual
+
+    total_budget = flt(budget_data[0].total_budget)
+    if total_budget == 0:
+        return actual_balance
+
+    # Prorate budget to period/YTD (assume even annual distribution over 12 months)
+    dist = 12
+    period_months = (period_end.year - period_start.year) * 12 + (period_end.month - period_start.month) + 1
+    prorated_budget = total_budget * (period_months / dist)
+    return actual_balance - prorated_budget
 
 
 def get_fiscal_year(date_str):
