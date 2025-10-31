@@ -198,46 +198,57 @@ def get_gl_entries(filters, accounting_dimensions):
 		as_dict=1,
 	)
 
-	party_name_map = get_party_name_map()
-
-	for gl_entry in gl_entries:
-		if gl_entry.party_type and gl_entry.party:
-			gl_entry.party_name = party_name_map.get(gl_entry.party_type, {}).get(gl_entry.party)
-
-	# Fetch custom_item for Sales and Purchase Invoices
-	sales_voucher_nos = [gle.voucher_no for gle in gl_entries if gle.voucher_type == "Sales Invoice"]
-	purchase_voucher_nos = [gle.voucher_no for gle in gl_entries if gle.voucher_type == "Purchase Invoice"]
-
-	sales_custom_items = {}
-	if sales_voucher_nos:
-		sales_invoices = frappe.get_all(
-			"Sales Invoice",
-			filters={"name": ["in", sales_voucher_nos]},
-			fields=["name", "custom_item"]
-		)
-		sales_custom_items = {si.name: si.custom_item for si in sales_invoices}
-
-	purchase_custom_items = {}
-	if purchase_voucher_nos:
-		purchase_invoices = frappe.get_all(
-			"Purchase Invoice",
-			filters={"name": ["in", purchase_voucher_nos]},
-			fields=["name", "custom_item"]
-		)
-		purchase_custom_items = {pi.name: pi.custom_item for pi in purchase_invoices}
-
-	for gl_entry in gl_entries:
-		if gl_entry.voucher_type == "Sales Invoice":
-			gl_entry.custom_item = sales_custom_items.get(gl_entry.voucher_no)
-		elif gl_entry.voucher_type == "Purchase Invoice":
-			gl_entry.custom_item = purchase_custom_items.get(gl_entry.voucher_no)
-		else:
-			gl_entry.custom_item = None
+	# Fetch custom_item mappings
+	if filters.get("company"):
+		si_map, pi_map, pe_map = get_custom_item_map(filters.company)
+		for gle in gl_entries:
+			if gle.voucher_type == "Sales Invoice":
+				gle["custom_item"] = si_map.get(gle.voucher_no)
+			elif gle.voucher_type == "Purchase Invoice":
+				gle["custom_item"] = pi_map.get(gle.voucher_no)
+			elif gle.voucher_type == "Payment Entry":
+				gle["custom_item"] = pe_map.get(gle.voucher_no)
+			else:
+				gle["custom_item"] = None
 
 	if filters.get("presentation_currency"):
 		return convert_to_presentation_currency(gl_entries, currency_map)
 	else:
 		return gl_entries
+
+
+def get_custom_item_map(company):
+	si_data = frappe.db.sql(
+		"""
+		select name, custom_item from `tabSales Invoice`
+		where docstatus = 1 and company = %s
+	""",
+		company,
+		as_dict=1,
+	)
+	si_map = {d.name: d.custom_item for d in si_data}
+
+	pi_data = frappe.db.sql(
+		"""
+		select name, custom_item from `tabPurchase Invoice`
+		where docstatus = 1 and company = %s
+	""",
+		company,
+		as_dict=1,
+	)
+	pi_map = {d.name: d.custom_item for d in pi_data}
+
+	pe_data = frappe.db.sql(
+		"""
+		select name, custom_item from `tabPayment Entry`
+		where docstatus = 1 and company = %s
+	""",
+		company,
+		as_dict=1,
+	)
+	pe_map = {d.name: d.custom_item for d in pe_data}
+
+	return si_map, pi_map, pe_map
 
 
 def get_conditions(filters):
@@ -712,15 +723,10 @@ def get_columns(filters):
 			"options": "voucher_type",
 			"width": 180,
 		},
-		{
-			"label": _("Item"),
-			"fieldname": "custom_item",
-			"fieldtype": "Data",
-			"width": 100,
-		},
 		{"label": _("Against Account"), "fieldname": "against", "width": 120},
 		{"label": _("Party Type"), "fieldname": "party_type", "width": 100},
 		{"label": _("Party"), "fieldname": "party", "width": 100},
+		{"label": _("Item"), "fieldname": "custom_item", "fieldtype": "Data", "width": 100},
 	]
 
 	if filters.get("include_dimensions"):
@@ -752,17 +758,3 @@ def get_columns(filters):
 		columns.extend([{"label": _("Remarks"), "fieldname": "remarks", "width": 400}])
 
 	return columns
-
-
-def get_party_name_map():
-	party_map = {}
-
-	customers = frappe.get_all("Customer", fields=["name", "customer_name"])
-	party_map["Customer"] = {c.name: c.customer_name for c in customers}
-
-	suppliers = frappe.get_all("Supplier", fields=["name", "supplier_name"])
-	party_map["Supplier"] = {s.name: s.supplier_name for s in suppliers}
-
-	employees = frappe.get_all("Employee", fields=["name", "employee_name"])
-	party_map["Employee"] = {e.name: e.employee_name for e in employees}
-	return party_map
