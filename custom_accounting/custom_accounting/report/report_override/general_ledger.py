@@ -204,20 +204,33 @@ def get_gl_entries(filters, accounting_dimensions):
 		if gl_entry.party_type and gl_entry.party:
 			gl_entry.party_name = party_name_map.get(gl_entry.party_type, {}).get(gl_entry.party)
 
-	# Fetch custom_item for Sales Invoices
-	sales_invoices_custom_items = {}
-	sales_invoice_voucher_nos = [gle.voucher_no for gle in gl_entries if gle.voucher_type == "Sales Invoice"]
-	if sales_invoice_voucher_nos:
+	# Fetch custom_item for Sales and Purchase Invoices
+	sales_voucher_nos = [gle.voucher_no for gle in gl_entries if gle.voucher_type == "Sales Invoice"]
+	purchase_voucher_nos = [gle.voucher_no for gle in gl_entries if gle.voucher_type == "Purchase Invoice"]
+
+	sales_custom_items = {}
+	if sales_voucher_nos:
 		sales_invoices = frappe.get_all(
 			"Sales Invoice",
-			filters={"name": ["in", sales_invoice_voucher_nos]},
+			filters={"name": ["in", sales_voucher_nos]},
 			fields=["name", "custom_item"]
 		)
-		sales_invoices_custom_items = {si.name: si.custom_item for si in sales_invoices}
+		sales_custom_items = {si.name: si.custom_item for si in sales_invoices}
+
+	purchase_custom_items = {}
+	if purchase_voucher_nos:
+		purchase_invoices = frappe.get_all(
+			"Purchase Invoice",
+			filters={"name": ["in", purchase_voucher_nos]},
+			fields=["name", "custom_item"]
+		)
+		purchase_custom_items = {pi.name: pi.custom_item for pi in purchase_invoices}
 
 	for gl_entry in gl_entries:
 		if gl_entry.voucher_type == "Sales Invoice":
-			gl_entry.custom_item = sales_invoices_custom_items.get(gl_entry.voucher_no)
+			gl_entry.custom_item = sales_custom_items.get(gl_entry.voucher_no)
+		elif gl_entry.voucher_type == "Purchase Invoice":
+			gl_entry.custom_item = purchase_custom_items.get(gl_entry.voucher_no)
 		else:
 			gl_entry.custom_item = None
 
@@ -353,20 +366,6 @@ def get_conditions(filters):
 						conditions.append(f"{dimension.fieldname} in %({dimension.fieldname})s")
 
 	return "and {}".format(" and ".join(conditions)) if conditions else ""
-
-
-def get_party_name_map():
-	party_map = {}
-
-	customers = frappe.get_all("Customer", fields=["name", "customer_name"])
-	party_map["Customer"] = {c.name: c.customer_name for c in customers}
-
-	suppliers = frappe.get_all("Supplier", fields=["name", "supplier_name"])
-	party_map["Supplier"] = {s.name: s.supplier_name for s in suppliers}
-
-	employees = frappe.get_all("Employee", fields=["name", "employee_name"])
-	party_map["Employee"] = {e.name: e.employee_name for e in employees}
-	return party_map
 
 
 def get_accounts_with_children(accounts):
@@ -724,19 +723,6 @@ def get_columns(filters):
 		{"label": _("Party"), "fieldname": "party", "width": 100},
 	]
 
-	supplier_master_name = frappe.db.get_single_value("Buying Settings", "supp_master_name")
-	customer_master_name = frappe.db.get_single_value("Selling Settings", "cust_master_name")
-
-	if supplier_master_name != "Supplier Name" or customer_master_name != "Customer Name":
-		columns.append(
-			{
-				"label": _("Party Name"),
-				"fieldname": "party_name",
-				"fieldtype": "Data",
-				"width": 150,
-			}
-		)
-
 	if filters.get("include_dimensions"):
 		columns.append({"label": _("Project"), "options": "Project", "fieldname": "project", "width": 100})
 
@@ -766,3 +752,17 @@ def get_columns(filters):
 		columns.extend([{"label": _("Remarks"), "fieldname": "remarks", "width": 400}])
 
 	return columns
+
+
+def get_party_name_map():
+	party_map = {}
+
+	customers = frappe.get_all("Customer", fields=["name", "customer_name"])
+	party_map["Customer"] = {c.name: c.customer_name for c in customers}
+
+	suppliers = frappe.get_all("Supplier", fields=["name", "supplier_name"])
+	party_map["Supplier"] = {s.name: s.supplier_name for s in suppliers}
+
+	employees = frappe.get_all("Employee", fields=["name", "employee_name"])
+	party_map["Employee"] = {e.name: e.employee_name for e in employees}
+	return party_map
